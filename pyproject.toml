@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "parabolic-sar-trend-strategy"
+version = "0.1.0"
+description = "A-share Parabolic SAR trend-following backtest project."
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "QrmNotFound" }]
+dependencies = [
+    "numpy>=1.22",
+    "pandas>=1.5",
+    "tinyshare>=0.1035",
+    "matplotlib>=3.7",
+    "markdown>=3.4",
+    "reportlab>=4.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
