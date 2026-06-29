@@ -39,6 +39,7 @@ class Position:
     shares: int
     cost_basis: float
     entry_date: str
+    entry_value: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -200,9 +201,12 @@ def _execute_pending_orders(
         execution_price = raw_open * (1 - execution_params.slippage_rate)
         trade_value = execution_price * position.shares
         costs = calculate_trade_cost(trade_value, "sell", execution_params)
-        cash += trade_value - costs.total
+        net_proceeds = trade_value - costs.total
+        cash += net_proceeds
         turnover += trade_value
-        return_pct = execution_price / position.cost_basis - 1 if position.cost_basis else 0.0
+        entry_value = position.entry_value or position.cost_basis * position.shares
+        realized_pnl = net_proceeds - entry_value
+        return_pct = realized_pnl / entry_value if entry_value else 0.0
         trade_rows.append(
             {
                 "signal_date": pending.signal_date,
@@ -214,6 +218,9 @@ def _execute_pending_orders(
                 "trade_value": trade_value,
                 "commission": costs.commission,
                 "stamp_tax": costs.stamp_tax,
+                "net_trade_value": net_proceeds,
+                "entry_value": entry_value,
+                "realized_pnl": realized_pnl,
                 "return_pct": return_pct,
                 "holding_days": _calendar_days_between(position.entry_date, trade_date),
                 "reason": "signal_or_risk",
@@ -223,7 +230,7 @@ def _execute_pending_orders(
 
     buy_slots = max(strategy_params.max_positions - len(positions), 0)
     buy_symbols = [symbol for symbol in pending.buys if symbol not in positions][:buy_slots]
-    for symbol in buy_symbols:
+    for buy_index, symbol in enumerate(buy_symbols):
         if cash <= 0:
             break
         row = price_lookup.get(symbol, {}).get(trade_date)
@@ -234,7 +241,7 @@ def _execute_pending_orders(
         if _at_up_limit(row, raw_open):
             trade_rows.append(_blocked_trade(pending.signal_date, trade_date, symbol, "blocked_buy", "up_limit"))
             continue
-        allocation = cash / max(len(buy_symbols), 1)
+        allocation = cash / max(len(buy_symbols) - buy_index, 1)
         shares = calculate_buy_capacity(allocation, raw_open, execution_params)
         if shares <= 0:
             continue
@@ -251,7 +258,13 @@ def _execute_pending_orders(
             continue
         cash -= total_cash_needed
         turnover += trade_value
-        positions[symbol] = Position(symbol=symbol, shares=shares, cost_basis=execution_price, entry_date=trade_date)
+        positions[symbol] = Position(
+            symbol=symbol,
+            shares=shares,
+            cost_basis=execution_price,
+            entry_date=trade_date,
+            entry_value=total_cash_needed,
+        )
         trade_rows.append(
             {
                 "signal_date": pending.signal_date,
@@ -263,6 +276,9 @@ def _execute_pending_orders(
                 "trade_value": trade_value,
                 "commission": costs.commission,
                 "stamp_tax": costs.stamp_tax,
+                "net_trade_value": -total_cash_needed,
+                "entry_value": total_cash_needed,
+                "realized_pnl": pd.NA,
                 "return_pct": pd.NA,
                 "holding_days": pd.NA,
                 "reason": "signal_buy",
@@ -371,6 +387,9 @@ def _blocked_trade(signal_date: str, trade_date: str, symbol: str, action: str, 
         "trade_value": 0.0,
         "commission": 0.0,
         "stamp_tax": 0.0,
+        "net_trade_value": 0.0,
+        "entry_value": pd.NA,
+        "realized_pnl": pd.NA,
         "return_pct": pd.NA,
         "holding_days": pd.NA,
         "reason": reason,

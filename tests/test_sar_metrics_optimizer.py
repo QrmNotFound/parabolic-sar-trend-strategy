@@ -36,6 +36,32 @@ class SarMetricsOptimizerTest(unittest.TestCase):
         self.assertAlmostEqual(metrics["average_positions"], 1.5)
         self.assertAlmostEqual(metrics["top_symbol_trade_value_share"], 0.5)
 
+    def test_profit_factor_uses_realized_pnl_when_available(self):
+        portfolio = pd.DataFrame(
+            {
+                "trade_date": ["20210101", "20210104", "20210105"],
+                "portfolio_value": [100.0, 101.0, 99.0],
+                "cash": [20.0, 20.0, 20.0],
+                "positions_count": [1, 1, 0],
+                "benchmark_value": [100.0, 100.5, 100.0],
+                "turnover": [0.0, 0.1, 0.1],
+            }
+        )
+        trades = pd.DataFrame(
+            {
+                "action": ["sell", "sell"],
+                "symbol": ["AAA", "BBB"],
+                "return_pct": [0.50, -0.10],
+                "realized_pnl": [100.0, -200.0],
+                "holding_days": [5, 3],
+                "trade_value": [1000.0, 1000.0],
+            }
+        )
+
+        metrics = calculate_performance_metrics(portfolio, trades, periods_per_year=252)
+
+        self.assertAlmostEqual(metrics["profit_factor"], 0.5)
+
     def test_optimizer_uses_only_sample_in_period_results(self):
         grid = ParameterGrid(
             accelerations=[0.01, 0.02],
@@ -92,6 +118,50 @@ class SarMetricsOptimizerTest(unittest.TestCase):
         rows = {row["acceleration"]: row for row in result.results}
         self.assertEqual(rows[0.01]["passes_selection_constraints"], 1.0)
         self.assertEqual(rows[0.02]["passes_selection_constraints"], 0.0)
+
+    def test_optimizer_prefers_diversified_candidate_after_sample_in_floor(self):
+        grid = ParameterGrid(
+            accelerations=[0.01, 0.02, 0.03],
+            maximums=[0.05],
+            volume_thresholds=[0.5],
+            rsi_ceilings=[100],
+        )
+
+        def runner(params, start_date, end_date):
+            base = {
+                "total_return": 0.40,
+                "sharpe_ratio": 0.5,
+                "max_drawdown": -0.28,
+                "turnover": 10.0,
+                "average_exposure": 0.70,
+                "low_exposure_day_ratio": 0.05,
+            }
+            if params.acceleration == 0.01:
+                return {
+                    **base,
+                    "excess_total_return": 0.25,
+                    "max_drawdown": -0.35,
+                    "average_positions": 20.0,
+                }
+            if params.acceleration == 0.02:
+                return {
+                    **base,
+                    "excess_total_return": 0.13,
+                    "average_positions": 15.0,
+                }
+            return {
+                **base,
+                "excess_total_return": 0.14,
+                "average_positions": 8.0,
+            }
+
+        result = choose_best_parameters(grid, "20160101", "20201231", runner)
+
+        self.assertEqual(result.best_params.acceleration, 0.02)
+        rows = {row["acceleration"]: row for row in result.results}
+        self.assertEqual(rows[0.01]["meets_sample_in_floor"], 0.0)
+        self.assertEqual(rows[0.02]["meets_sample_in_floor"], 1.0)
+        self.assertAlmostEqual(rows[0.02]["excess_total_return_for_score"], 0.12)
 
 
 if __name__ == "__main__":

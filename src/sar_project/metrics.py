@@ -62,10 +62,16 @@ def calculate_performance_metrics(
     trade_returns = sell_trades.get("return_pct", pd.Series(dtype=float)).dropna().astype(float)
     wins = trade_returns[trade_returns > 0]
     losses = trade_returns[trade_returns < 0]
+    realized_pnl = sell_trades.get("realized_pnl", pd.Series(dtype=float)).dropna().astype(float)
+    realized_wins = realized_pnl[realized_pnl > 0]
+    realized_losses = realized_pnl[realized_pnl < 0]
     trade_win_rate = float((trade_returns > 0).mean()) if len(trade_returns) else 0.0
     average_win = float(wins.mean()) if len(wins) else 0.0
     average_loss = float(losses.mean()) if len(losses) else 0.0
-    profit_factor = float(wins.sum() / abs(losses.sum())) if abs(losses.sum()) > 0 else 0.0
+    if len(realized_pnl) and abs(realized_losses.sum()) > 0:
+        profit_factor = float(realized_wins.sum() / abs(realized_losses.sum()))
+    else:
+        profit_factor = float(wins.sum() / abs(losses.sum())) if abs(losses.sum()) > 0 else 0.0
     payoff_ratio = float(average_win / abs(average_loss)) if average_loss < 0 else 0.0
 
     turnover = portfolio.get("turnover", pd.Series(dtype=float)).fillna(0).astype(float)

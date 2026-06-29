@@ -55,6 +55,24 @@ class SarBacktestTest(unittest.TestCase):
         self.assertEqual(shares % 100, 0)
         self.assertLessEqual(shares, 9900)
 
+    def test_multi_buy_allocation_uses_remaining_buy_count(self):
+        prices = {symbol: _price_frame([10.0, 10.0, 10.0, 10.0]) for symbol in ["AAA", "BBB", "CCC"]}
+        inputs = BacktestInputs(
+            trading_dates=["20210101", "20210104", "20210105", "20210106"],
+            prices=prices,
+            universe_by_date={date: ["AAA", "BBB", "CCC"] for date in ["20210101", "20210104", "20210105", "20210106"]},
+        )
+
+        result = run_backtest(
+            inputs,
+            StrategyParams(max_positions=3, rebalance_interval=1, initial_capital=30000),
+            ExecutionParams(commission_rate=0.0, stamp_tax_rate=0.0, slippage_rate=0.0, lot_size=100),
+        )
+
+        buys = result.trades[result.trades["action"] == "buy"].sort_values("symbol")
+        self.assertEqual(buys["shares"].tolist(), [1000, 1000, 1000])
+        self.assertAlmostEqual(result.portfolio.iloc[1]["cash"], 0.0)
+
     def test_signals_execute_on_next_trading_day_not_same_close(self):
         prices = {"AAA": _price_frame([10.0, 11.0, 12.0, 13.0])}
         inputs = BacktestInputs(
@@ -118,6 +136,29 @@ class SarBacktestTest(unittest.TestCase):
         sells = result.trades[result.trades["action"] == "sell"]
         self.assertEqual(len(sells), 1)
         self.assertEqual(int(sells.iloc[0]["holding_days"]), 2)
+
+    def test_sell_trade_return_pct_includes_buy_and_sell_costs(self):
+        frame = _price_frame([10.0, 10.0, 10.0, 12.0])
+        frame.loc[2, "sar"] = 13.0
+        inputs = BacktestInputs(
+            trading_dates=["20210101", "20210104", "20210105", "20210106"],
+            prices={"AAA": frame},
+            universe_by_date={date: ["AAA"] for date in ["20210101", "20210104", "20210105", "20210106"]},
+        )
+
+        result = run_backtest(
+            inputs,
+            StrategyParams(max_positions=1, rebalance_interval=1, initial_capital=100000),
+            ExecutionParams(commission_rate=0.01, stamp_tax_rate=0.02, slippage_rate=0.0, lot_size=100),
+        )
+
+        buy = result.trades[result.trades["action"] == "buy"].iloc[0]
+        sell = result.trades[result.trades["action"] == "sell"].iloc[0]
+        shares = int(buy["shares"])
+        entry_cash = shares * 10.0 * 1.01
+        exit_cash = shares * 12.0 * (1 - 0.01 - 0.02)
+        self.assertAlmostEqual(sell["return_pct"], exit_cash / entry_cash - 1)
+        self.assertAlmostEqual(sell["realized_pnl"], exit_cash - entry_cash)
 
     def test_cached_price_lookup_preserves_backtest_results(self):
         prices = {"AAA": _price_frame([10.0, 11.0, 12.0, 13.0])}

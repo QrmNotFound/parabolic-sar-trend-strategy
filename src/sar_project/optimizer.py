@@ -70,8 +70,11 @@ def choose_best_parameters(
     min_average_exposure: float = 0.45,
     min_average_positions: float = 5.0,
     max_low_exposure_day_ratio: float = 0.35,
+    min_train_excess_return: float = 0.10,
+    min_train_max_drawdown: float = -0.30,
+    excess_return_score_cap: float = 0.12,
 ) -> OptimizationResult:
-    """Run each grid point on the sample-in period and choose a benchmark-aware result."""
+    """Run each grid point on the sample-in period and choose a risk-aware result."""
 
     rows: List[Dict[str, float]] = []
     best_params = None
@@ -96,10 +99,23 @@ def choose_best_parameters(
             and metrics.get("low_exposure_day_ratio", 0.0) <= max_low_exposure_day_ratio
         )
         row["passes_selection_constraints"] = float(passes_constraints)
+        meets_sample_in_floor = (
+            metrics.get("total_return", 0.0) > 0
+            and metrics.get("excess_total_return", 0.0) >= min_train_excess_return
+            and metrics.get("max_drawdown", -1.0) >= min_train_max_drawdown
+        )
+        excess_total_return_for_score = min(
+            metrics.get("excess_total_return", 0.0),
+            excess_return_score_cap,
+        )
+        row["meets_sample_in_floor"] = float(meets_sample_in_floor)
+        row["excess_total_return_for_score"] = float(excess_total_return_for_score)
         rows.append(row)
         key = (
             1 if passes_constraints else 0,
-            metrics.get("excess_total_return", 0.0),
+            1 if meets_sample_in_floor else 0,
+            metrics.get("average_positions", min_average_positions),
+            excess_total_return_for_score,
             metrics.get("sharpe_ratio", 0.0),
             metrics.get("max_drawdown", -1.0),
             -metrics.get("turnover", 0.0),
