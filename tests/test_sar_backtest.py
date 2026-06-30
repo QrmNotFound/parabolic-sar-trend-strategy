@@ -35,9 +35,25 @@ def _price_frame(close_values, *, up_limits=None, down_limits=None):
     )
 
 
+def _price_frame_with_raw(raw_values, adjusted_values):
+    frame = _price_frame(adjusted_values)
+    frame["open"] = raw_values
+    frame["high"] = [value + 0.2 for value in raw_values]
+    frame["low"] = [value - 0.2 for value in raw_values]
+    frame["close"] = raw_values
+    frame["up_limit"] = [value * 1.1 for value in raw_values]
+    frame["down_limit"] = [value * 0.9 for value in raw_values]
+    return frame
+
+
 class SarBacktestTest(unittest.TestCase):
     def test_trade_cost_distinguishes_buy_and_sell_tax(self):
-        params = ExecutionParams(commission_rate=0.0003, stamp_tax_rate=0.001, slippage_rate=0.0005)
+        params = ExecutionParams(
+            commission_rate=0.0003,
+            stamp_tax_rate=0.001,
+            slippage_rate=0.0005,
+            minimum_commission=0.0,
+        )
 
         buy = calculate_trade_cost(10000, "buy", params)
         sell = calculate_trade_cost(10000, "sell", params)
@@ -47,8 +63,18 @@ class SarBacktestTest(unittest.TestCase):
         self.assertAlmostEqual(sell.commission, 3.0)
         self.assertAlmostEqual(sell.stamp_tax, 10.0)
 
+    def test_trade_cost_applies_minimum_commission(self):
+        params = ExecutionParams(commission_rate=0.0003, stamp_tax_rate=0.001, minimum_commission=5.0)
+
+        buy = calculate_trade_cost(1000, "buy", params)
+        sell = calculate_trade_cost(1000, "sell", params)
+
+        self.assertAlmostEqual(buy.commission, 5.0)
+        self.assertAlmostEqual(sell.commission, 5.0)
+        self.assertAlmostEqual(sell.stamp_tax, 1.0)
+
     def test_buy_capacity_rounds_to_board_lot_and_includes_costs(self):
-        params = ExecutionParams(commission_rate=0.0003, slippage_rate=0.0005, lot_size=100)
+        params = ExecutionParams(commission_rate=0.0003, slippage_rate=0.0005, minimum_commission=0.0, lot_size=100)
 
         shares = calculate_buy_capacity(cash=100000, raw_open_price=10.0, params=params)
 
@@ -66,7 +92,13 @@ class SarBacktestTest(unittest.TestCase):
         result = run_backtest(
             inputs,
             StrategyParams(max_positions=3, rebalance_interval=1, initial_capital=30000),
-            ExecutionParams(commission_rate=0.0, stamp_tax_rate=0.0, slippage_rate=0.0, lot_size=100),
+            ExecutionParams(
+                commission_rate=0.0,
+                stamp_tax_rate=0.0,
+                slippage_rate=0.0,
+                minimum_commission=0.0,
+                lot_size=100,
+            ),
         )
 
         buys = result.trades[result.trades["action"] == "buy"].sort_values("symbol")
@@ -91,6 +123,94 @@ class SarBacktestTest(unittest.TestCase):
         self.assertEqual(len(buy_trades), 1)
         self.assertEqual(buy_trades.iloc[0]["signal_date"], "20210101")
         self.assertEqual(buy_trades.iloc[0]["trade_date"], "20210104")
+
+    def test_execution_and_valuation_use_raw_prices_when_available(self):
+        frame = _price_frame_with_raw(
+            raw_values=[100.0, 100.0, 101.0, 102.0],
+            adjusted_values=[10.0, 10.0, 10.1, 10.2],
+        )
+        inputs = BacktestInputs(
+            trading_dates=["20210101", "20210104", "20210105", "20210106"],
+            prices={"AAA": frame},
+            universe_by_date={date: ["AAA"] for date in ["20210101", "20210104", "20210105", "20210106"]},
+        )
+
+        result = run_backtest(
+            inputs,
+            StrategyParams(max_positions=1, rebalance_interval=1, initial_capital=10000),
+            ExecutionParams(
+                commission_rate=0.0,
+                stamp_tax_rate=0.0,
+                slippage_rate=0.0,
+                minimum_commission=0.0,
+                lot_size=100,
+            ),
+        )
+
+        buy = result.trades[result.trades["action"] == "buy"].iloc[0]
+        self.assertEqual(int(buy["shares"]), 100)
+        self.assertAlmostEqual(buy["price"], 100.0)
+        self.assertAlmostEqual(result.portfolio.iloc[1]["portfolio_value"], 10000.0)
+        self.assertAlmostEqual(result.portfolio.iloc[2]["portfolio_value"], 10100.0)
+
+    def test_raw_down_limit_blocks_sell_execution(self):
+        frame = _price_frame_with_raw(
+            raw_values=[10.0, 9.0, 8.0, 8.0],
+            adjusted_values=[50.0, 50.0, 50.0, 50.0],
+        )
+        frame["down_limit"] = [1.0, 9.0, 8.0, 1.0]
+        frame["down_limit_adj"] = [1.0, 1.0, 1.0, 1.0]
+        frame.loc[0, "sar"] = 60.0
+        position = Position(symbol="AAA", shares=1000, cost_basis=10.0, entry_date="20201231", last_price=10.0)
+        inputs = BacktestInputs(
+            trading_dates=["20210101", "20210104", "20210105", "20210106"],
+            prices={"AAA": frame},
+            universe_by_date={date: ["AAA"] for date in ["20210101", "20210104", "20210105", "20210106"]},
+            starting_positions={"AAA": position},
+            starting_cash=0.0,
+        )
+
+        result = run_backtest(
+            inputs,
+            StrategyParams(max_positions=1, rebalance_interval=1, initial_capital=10000),
+            ExecutionParams(lot_size=100),
+        )
+
+        blocked = result.trades[result.trades["action"] == "blocked_sell"]
+        self.assertGreaterEqual(len(blocked), 1)
+        self.assertEqual(blocked.iloc[0]["trade_date"], "20210104")
+
+    def test_missing_close_uses_last_valid_valuation_price(self):
+        frame = _price_frame_with_raw(
+            raw_values=[10.0, 11.0, 12.0, 13.0],
+            adjusted_values=[10.0, 11.0, 12.0, 13.0],
+        )
+        frame.loc[2, "close"] = pd.NA
+        frame.loc[2, "close_adj"] = pd.NA
+        position = Position(symbol="AAA", shares=1000, cost_basis=8.0, entry_date="20201231", last_price=10.0)
+        inputs = BacktestInputs(
+            trading_dates=["20210101", "20210104", "20210105", "20210106"],
+            prices={"AAA": frame},
+            universe_by_date={date: ["AAA"] for date in ["20210101", "20210104", "20210105", "20210106"]},
+            starting_positions={"AAA": position},
+            starting_cash=0.0,
+        )
+
+        result = run_backtest(
+            inputs,
+            StrategyParams(max_positions=1, rebalance_interval=10, initial_capital=8000, take_profit=1.0),
+            ExecutionParams(
+                commission_rate=0.0,
+                stamp_tax_rate=0.0,
+                slippage_rate=0.0,
+                minimum_commission=0.0,
+                lot_size=100,
+            ),
+        )
+
+        self.assertAlmostEqual(result.portfolio.iloc[0]["portfolio_value"], 10000.0)
+        self.assertAlmostEqual(result.portfolio.iloc[1]["portfolio_value"], 11000.0)
+        self.assertAlmostEqual(result.portfolio.iloc[2]["portfolio_value"], 11000.0)
 
     def test_down_limit_blocks_sell_execution(self):
         frame = _price_frame(

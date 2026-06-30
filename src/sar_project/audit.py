@@ -16,6 +16,7 @@ from sar_project.optimizer import SarParams
 
 
 AUDIT_FILES = (
+    "README.md",
     "market_data_used.csv.gz",
     "trade_ledger_sample_out.csv",
     "round_trip_trades_sample_out.csv",
@@ -24,6 +25,7 @@ AUDIT_FILES = (
     "raw_snapshot_manifest.csv",
     "optimization_results_sample_in.csv",
     "best_params.json",
+    "data_coverage.csv",
     "audit_manifest.csv",
 )
 
@@ -44,8 +46,12 @@ def generate_audit_artifacts(paths: ProjectPaths, start_date: str, end_date: str
     _copy_result(paths.processed_root / "portfolio_test.csv", audit_root / "portfolio_sample_out.csv")
     _copy_result(paths.processed_root / "optimization_results.csv", audit_root / "optimization_results_sample_in.csv")
     _copy_result(paths.processed_root / "best_params.json", audit_root / "best_params.json")
+    coverage_source = paths.docs_root / "data_coverage.csv"
+    if coverage_source.exists():
+        _copy_result(coverage_source, audit_root / "data_coverage.csv")
     _write_source_inventory(paths, audit_root / "source_data_inventory.csv")
     _write_raw_snapshot_manifest(paths.raw_root / "tinyshare", audit_root / "raw_snapshot_manifest.csv")
+    _write_audit_readme(audit_root)
     _write_audit_manifest(audit_root)
 
 
@@ -62,6 +68,8 @@ def _write_market_data(
         "high",
         "low",
         "close",
+        "ma60",
+        "atr20",
         "vol",
         "amount",
         "adj_factor",
@@ -99,7 +107,7 @@ def _write_trade_ledger(paths: ProjectPaths, inputs, params: SarParams, path: Pa
         paths.processed_root / "trades_test.csv",
         dtype={"signal_date": str, "trade_date": str, "symbol": str},
     )
-    signal_fields = ["close_adj", "sar", "rsi", "volume_ratio", "signal_strength"]
+    signal_fields = ["close", "close_adj", "sar", "ma60", "atr20", "rsi", "volume_ratio", "signal_strength"]
     execution_fields = ["open", "open_adj", "up_limit", "down_limit", "up_limit_adj", "down_limit_adj"]
     lookups = {
         symbol: frame.set_index(frame["trade_date"].astype(str)).to_dict(orient="index")
@@ -126,6 +134,8 @@ def _write_trade_ledger(paths: ProjectPaths, inputs, params: SarParams, path: Pa
         action = str(row.get("action", ""))
         if action == "buy":
             row["inferred_reason"] = "signal_buy"
+            row["entry_reason"] = "signal_buy"
+            row["exit_reason"] = pd.NA
             open_positions.setdefault(symbol, []).append(
                 {
                     "trade_date": trade_date,
@@ -139,13 +149,19 @@ def _write_trade_ledger(paths: ProjectPaths, inputs, params: SarParams, path: Pa
             row["matched_entry_trade_date"] = entry.get("trade_date", pd.NA)
             row["matched_entry_price"] = entry.get("price", pd.NA)
             row["inferred_reason"] = _infer_sell_reason(row, params)
+            row["entry_reason"] = pd.NA
+            row["exit_reason"] = row["inferred_reason"]
         elif action == "blocked_sell":
             entry = open_positions.get(symbol, [{}])[0] if open_positions.get(symbol) else {}
             row["matched_entry_trade_date"] = entry.get("trade_date", pd.NA)
             row["matched_entry_price"] = entry.get("price", pd.NA)
             row["inferred_reason"] = row.get("reason", "blocked_sell")
+            row["entry_reason"] = pd.NA
+            row["exit_reason"] = row["inferred_reason"]
         else:
             row["inferred_reason"] = row.get("reason", action)
+            row["entry_reason"] = row["inferred_reason"] if "buy" in action else pd.NA
+            row["exit_reason"] = row["inferred_reason"] if "sell" in action else pd.NA
         rows.append(row)
 
     ledger = pd.DataFrame(rows)
@@ -157,6 +173,7 @@ def _infer_sell_reason(row: Mapping[str, object], params: SarParams) -> str:
     if row.get("signal_in_universe") is False:
         return "left_universe"
     close = _to_float(row.get("signal_close_adj"))
+    raw_close = _to_float(row.get("signal_close")) or close
     sar = _to_float(row.get("signal_sar"))
     rsi = _to_float(row.get("signal_rsi"))
     entry_price = _to_float(row.get("matched_entry_price"))
@@ -164,9 +181,9 @@ def _infer_sell_reason(row: Mapping[str, object], params: SarParams) -> str:
         return "sar_break"
     if rsi is not None and rsi > params.rsi_ceiling:
         return "rsi_ceiling"
-    if close is not None and entry_price is not None and close < entry_price * (1 - params.stop_loss):
-        return "stop_loss"
-    if close is not None and entry_price is not None and close > entry_price * (1 + params.take_profit):
+    if raw_close is not None and entry_price is not None and raw_close < entry_price * (1 - params.stop_loss):
+        return "fixed_stop_loss"
+    if raw_close is not None and entry_price is not None and raw_close > entry_price * (1 + params.take_profit):
         return "take_profit"
     return "signal_or_risk"
 
@@ -223,20 +240,52 @@ def _copy_result(source: Path, destination: Path) -> None:
     shutil.copyfile(source, destination)
 
 
+def _write_audit_readme(audit_root: Path) -> None:
+    (audit_root / "README.md").write_text(
+        "# SAR Audit Attachments\n\n"
+        "This directory contains commit-friendly audit outputs for the SAR baseline and report.\n\n"
+        "| File | Purpose |\n"
+        "| --- | --- |\n"
+        "| `trade_ledger_sample_out.csv` | All historical-validation executions and blocked orders with signal and execution context |\n"
+        "| `round_trip_trades_sample_out.csv` | Buy/sell matched trade rounds under the one-position-per-symbol assumption |\n"
+        "| `portfolio_sample_out.csv` | Daily portfolio value, cash, position count and benchmark values |\n"
+        "| `optimization_results_sample_in.csv` | Real sample-in backtest result for every parameter combination |\n"
+        "| `best_params.json` | Parameters selected from the sample-in period |\n"
+        "| `data_coverage.csv` | Expected, cached and missing symbols |\n"
+        "| `source_data_inventory.csv` | Local cache file metadata and SHA-256 hashes |\n"
+        "| `raw_snapshot_manifest.csv` | Raw provider snapshot manifest without credentials |\n"
+        "| `audit_manifest.csv` | SHA-256 hashes for the audit attachments |\n\n"
+        "Raw provider data and credentials are not committed. Market data extracts should be checked against the data provider's redistribution rules before public release.\n",
+        encoding="utf-8",
+    )
+
+
 def _write_source_inventory(paths: ProjectPaths, path: Path) -> None:
     rows = []
+    price_sources = _project_price_sources(paths)
     sources = [
         paths.interim_root / "trade_calendar.csv",
         paths.interim_root / "index_weight_top50.csv",
         paths.interim_root / "index_daily.csv",
         paths.interim_root / "symbols.json",
-        *sorted(paths.price_root.glob("*.csv")),
+        *price_sources,
     ]
     for source in sources:
         if not source.exists():
             continue
         rows.append(_inventory_row(paths.root, source))
     pd.DataFrame(rows).to_csv(path, index=False)
+
+
+def _project_price_sources(paths: ProjectPaths) -> list[Path]:
+    symbols_path = paths.interim_root / "symbols.json"
+    if not symbols_path.exists():
+        return sorted(paths.price_root.glob("*.csv"))
+    try:
+        symbols = set(json.loads(symbols_path.read_text(encoding="utf-8")))
+    except Exception:
+        return sorted(paths.price_root.glob("*.csv"))
+    return sorted(path for path in paths.price_root.glob("*.csv") if path.stem in symbols)
 
 
 def _inventory_row(root: Path, source: Path) -> dict[str, object]:

@@ -17,6 +17,7 @@ class ExecutionParams:
     commission_rate: float = 0.0003
     stamp_tax_rate: float = 0.001
     slippage_rate: float = 0.0005
+    minimum_commission: float = 5.0
     lot_size: int = 100
 
 
@@ -40,6 +41,7 @@ class Position:
     cost_basis: float
     entry_date: str
     entry_value: float = 0.0
+    last_price: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -78,7 +80,7 @@ class PendingOrders:
 def calculate_trade_cost(trade_value: float, side: str, params: ExecutionParams) -> TradeCost:
     """Calculate commission and sell-side stamp tax."""
 
-    commission = trade_value * params.commission_rate
+    commission = max(trade_value * params.commission_rate, params.minimum_commission) if trade_value > 0 else 0.0
     stamp_tax = trade_value * params.stamp_tax_rate if side == "sell" else 0.0
     return TradeCost(commission=commission, stamp_tax=stamp_tax, total=commission + stamp_tax)
 
@@ -91,7 +93,14 @@ def calculate_buy_capacity(cash: float, raw_open_price: float, params: Execution
     execution_price = raw_open_price * (1 + params.slippage_rate)
     gross_lot_cost = execution_price * params.lot_size * (1 + params.commission_rate)
     lots = int(cash // gross_lot_cost)
-    return lots * params.lot_size
+    while lots > 0:
+        shares = lots * params.lot_size
+        trade_value = execution_price * shares
+        costs = calculate_trade_cost(trade_value, "buy", params)
+        if trade_value + costs.total <= cash:
+            return shares
+        lots -= 1
+    return 0
 
 
 def run_backtest(
@@ -190,10 +199,10 @@ def _execute_pending_orders(
         row = price_lookup.get(symbol, {}).get(trade_date)
         if position is None:
             continue
-        if row is None or pd.isna(row.get("open_adj")):
+        raw_open = _execution_open_price(row)
+        if raw_open is None:
             trade_rows.append(_blocked_trade(pending.signal_date, trade_date, symbol, "blocked_sell", "missing_open"))
             continue
-        raw_open = float(row["open_adj"])
         if _at_down_limit(row, raw_open):
             trade_rows.append(_blocked_trade(pending.signal_date, trade_date, symbol, "blocked_sell", "down_limit"))
             continue
@@ -201,6 +210,7 @@ def _execute_pending_orders(
         execution_price = raw_open * (1 - execution_params.slippage_rate)
         trade_value = execution_price * position.shares
         costs = calculate_trade_cost(trade_value, "sell", execution_params)
+        slippage_cost = abs(raw_open - execution_price) * position.shares
         net_proceeds = trade_value - costs.total
         cash += net_proceeds
         turnover += trade_value
@@ -214,10 +224,13 @@ def _execute_pending_orders(
                 "symbol": symbol,
                 "action": "sell",
                 "shares": position.shares,
+                "raw_open": raw_open,
+                "execution_price": execution_price,
                 "price": execution_price,
                 "trade_value": trade_value,
                 "commission": costs.commission,
                 "stamp_tax": costs.stamp_tax,
+                "slippage_cost": slippage_cost,
                 "net_trade_value": net_proceeds,
                 "entry_value": entry_value,
                 "realized_pnl": realized_pnl,
@@ -234,10 +247,10 @@ def _execute_pending_orders(
         if cash <= 0:
             break
         row = price_lookup.get(symbol, {}).get(trade_date)
-        if row is None or pd.isna(row.get("open_adj")):
+        raw_open = _execution_open_price(row)
+        if raw_open is None:
             trade_rows.append(_blocked_trade(pending.signal_date, trade_date, symbol, "blocked_buy", "missing_open"))
             continue
-        raw_open = float(row["open_adj"])
         if _at_up_limit(row, raw_open):
             trade_rows.append(_blocked_trade(pending.signal_date, trade_date, symbol, "blocked_buy", "up_limit"))
             continue
@@ -248,14 +261,16 @@ def _execute_pending_orders(
         execution_price = raw_open * (1 + execution_params.slippage_rate)
         trade_value = execution_price * shares
         costs = calculate_trade_cost(trade_value, "buy", execution_params)
+        slippage_cost = abs(execution_price - raw_open) * shares
         total_cash_needed = trade_value + costs.total
         if total_cash_needed > cash:
             shares = calculate_buy_capacity(cash, raw_open, execution_params)
+            if shares <= 0:
+                continue
             trade_value = execution_price * shares
             costs = calculate_trade_cost(trade_value, "buy", execution_params)
+            slippage_cost = abs(execution_price - raw_open) * shares
             total_cash_needed = trade_value + costs.total
-        if shares <= 0:
-            continue
         cash -= total_cash_needed
         turnover += trade_value
         positions[symbol] = Position(
@@ -264,6 +279,7 @@ def _execute_pending_orders(
             cost_basis=execution_price,
             entry_date=trade_date,
             entry_value=total_cash_needed,
+            last_price=execution_price,
         )
         trade_rows.append(
             {
@@ -272,10 +288,13 @@ def _execute_pending_orders(
                 "symbol": symbol,
                 "action": "buy",
                 "shares": shares,
+                "raw_open": raw_open,
+                "execution_price": execution_price,
                 "price": execution_price,
                 "trade_value": trade_value,
                 "commission": costs.commission,
                 "stamp_tax": costs.stamp_tax,
+                "slippage_cost": slippage_cost,
                 "net_trade_value": -total_cash_needed,
                 "entry_value": total_cash_needed,
                 "realized_pnl": pd.NA,
@@ -303,12 +322,18 @@ def _make_pending_orders(
         if row is None:
             sells.append(symbol)
             continue
-        close = float(row["close_adj"])
+        signal_close = _to_float(row.get("close_adj"))
+        if signal_close is None:
+            sells.append(symbol)
+            continue
+        risk_close = _valuation_close_price(row)
+        if risk_close is None:
+            risk_close = position.last_price or position.cost_basis
         sell_signal = (
-            close < float(row.get("sar", close))
+            signal_close < float(row.get("sar", signal_close))
             or float(row.get("rsi", 50.0)) > strategy_params.rsi_ceiling
-            or close < position.cost_basis * (1 - strategy_params.stop_loss)
-            or close > position.cost_basis * (1 + strategy_params.take_profit)
+            or risk_close < position.cost_basis * (1 - strategy_params.stop_loss)
+            or risk_close > position.cost_basis * (1 + strategy_params.take_profit)
             or symbol not in universe_set
         )
         if sell_signal:
@@ -342,8 +367,12 @@ def _portfolio_value(
     value = cash
     for symbol, position in positions.items():
         row = price_lookup.get(symbol, {}).get(trade_date)
-        if row is not None and not pd.isna(row.get("close_adj")):
-            value += position.shares * float(row["close_adj"])
+        close_price = _valuation_close_price(row)
+        if close_price is not None:
+            position.last_price = close_price
+            value += position.shares * close_price
+        elif position.last_price:
+            value += position.shares * position.last_price
         else:
             value += position.shares * position.cost_basis
     return float(value)
@@ -367,13 +396,44 @@ def _attach_benchmarks(
 
 
 def _at_up_limit(row: pd.Series, raw_open: float) -> bool:
-    limit = row.get("up_limit_adj")
+    limit = row.get("up_limit")
+    if limit is None or pd.isna(limit):
+        limit = row.get("up_limit_adj")
     return limit is not None and not pd.isna(limit) and raw_open >= float(limit) * 0.999
 
 
 def _at_down_limit(row: pd.Series, raw_open: float) -> bool:
-    limit = row.get("down_limit_adj")
+    limit = row.get("down_limit")
+    if limit is None or pd.isna(limit):
+        limit = row.get("down_limit_adj")
     return limit is not None and not pd.isna(limit) and raw_open <= float(limit) * 1.001
+
+
+def _execution_open_price(row: Optional[Mapping[str, object]]) -> Optional[float]:
+    if row is None:
+        return None
+    value = _to_float(row.get("open"))
+    if value is None:
+        value = _to_float(row.get("open_adj"))
+    return value
+
+
+def _valuation_close_price(row: Optional[Mapping[str, object]]) -> Optional[float]:
+    if row is None:
+        return None
+    value = _to_float(row.get("close"))
+    if value is None:
+        value = _to_float(row.get("close_adj"))
+    return value
+
+
+def _to_float(value: object) -> Optional[float]:
+    try:
+        if pd.isna(value):
+            return None
+        return float(value)
+    except Exception:
+        return None
 
 
 def _blocked_trade(signal_date: str, trade_date: str, symbol: str, action: str, reason: str) -> Dict[str, object]:
@@ -383,10 +443,13 @@ def _blocked_trade(signal_date: str, trade_date: str, symbol: str, action: str, 
         "symbol": symbol,
         "action": action,
         "shares": 0,
+        "raw_open": pd.NA,
+        "execution_price": pd.NA,
         "price": pd.NA,
         "trade_value": 0.0,
         "commission": 0.0,
         "stamp_tax": 0.0,
+        "slippage_cost": 0.0,
         "net_trade_value": 0.0,
         "entry_value": pd.NA,
         "realized_pnl": pd.NA,

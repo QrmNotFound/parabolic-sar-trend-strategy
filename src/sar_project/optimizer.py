@@ -114,10 +114,11 @@ def choose_best_parameters(
         key = (
             1 if passes_constraints else 0,
             1 if meets_sample_in_floor else 0,
-            metrics.get("average_positions", min_average_positions),
             excess_total_return_for_score,
             metrics.get("sharpe_ratio", 0.0),
             metrics.get("max_drawdown", -1.0),
+            metrics.get("total_return", 0.0),
+            metrics.get("average_positions", min_average_positions),
             -metrics.get("turnover", 0.0),
         )
         if best_key is None or key > best_key:

@@ -25,6 +25,9 @@ class SarMetricsOptimizerTest(unittest.TestCase):
                 "return_pct": [0.10, -0.05],
                 "holding_days": [5, 3],
                 "trade_value": [1000.0, 1000.0],
+                "commission": [5.0, 5.0],
+                "stamp_tax": [1.0, 1.0],
+                "slippage_cost": [0.5, 0.5],
             }
         )
 
@@ -35,6 +38,10 @@ class SarMetricsOptimizerTest(unittest.TestCase):
         self.assertAlmostEqual(metrics["average_exposure"], 0.8)
         self.assertAlmostEqual(metrics["average_positions"], 1.5)
         self.assertAlmostEqual(metrics["top_symbol_trade_value_share"], 0.5)
+        self.assertAlmostEqual(metrics["total_commission"], 10.0)
+        self.assertAlmostEqual(metrics["total_stamp_tax"], 2.0)
+        self.assertAlmostEqual(metrics["total_slippage_cost"], 1.0)
+        self.assertAlmostEqual(metrics["total_transaction_cost"], 13.0)
 
     def test_profit_factor_uses_realized_pnl_when_available(self):
         portfolio = pd.DataFrame(
@@ -162,6 +169,39 @@ class SarMetricsOptimizerTest(unittest.TestCase):
         self.assertEqual(rows[0.01]["meets_sample_in_floor"], 0.0)
         self.assertEqual(rows[0.02]["meets_sample_in_floor"], 1.0)
         self.assertAlmostEqual(rows[0.02]["excess_total_return_for_score"], 0.12)
+
+    def test_optimizer_fallback_does_not_let_position_count_outrank_sample_in_performance(self):
+        grid = ParameterGrid(
+            accelerations=[0.01, 0.02],
+            maximums=[0.05],
+            volume_thresholds=[0.5],
+            rsi_ceilings=[100],
+        )
+
+        def runner(params, start_date, end_date):
+            base = {
+                "total_return": 0.05,
+                "sharpe_ratio": 0.1,
+                "max_drawdown": -0.25,
+                "turnover": 10.0,
+                "average_exposure": 0.70,
+                "low_exposure_day_ratio": 0.05,
+            }
+            if params.acceleration == 0.01:
+                return {
+                    **base,
+                    "excess_total_return": -0.10,
+                    "average_positions": 8.0,
+                }
+            return {
+                **base,
+                "excess_total_return": -0.30,
+                "average_positions": 30.0,
+            }
+
+        result = choose_best_parameters(grid, "20160101", "20201231", runner)
+
+        self.assertEqual(result.best_params.acceleration, 0.01)
 
 
 if __name__ == "__main__":

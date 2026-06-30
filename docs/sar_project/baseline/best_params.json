@@ -1,0 +1,10 @@
+{
+  "acceleration": 0.003,
+  "maximum": 0.1,
+  "volume_threshold": 0.5,
+  "rsi_ceiling": 100,
+  "max_positions": 30,
+  "rebalance_interval": 60,
+  "stop_loss": 0.3,
+  "take_profit": 10.0
+}

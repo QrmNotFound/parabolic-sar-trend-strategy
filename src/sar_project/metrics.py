@@ -85,6 +85,10 @@ def calculate_performance_metrics(
     else:
         executed_trades = trades
     trade_value = executed_trades.get("trade_value", pd.Series(dtype=float)).fillna(0).astype(float)
+    total_commission = float(executed_trades.get("commission", pd.Series(dtype=float)).fillna(0).astype(float).sum())
+    total_stamp_tax = float(executed_trades.get("stamp_tax", pd.Series(dtype=float)).fillna(0).astype(float).sum())
+    total_slippage_cost = float(executed_trades.get("slippage_cost", pd.Series(dtype=float)).fillna(0).astype(float).sum())
+    total_transaction_cost = total_commission + total_stamp_tax + total_slippage_cost
     symbol_trade_value = (
         executed_trades.assign(_trade_value=trade_value).groupby("symbol")["_trade_value"].sum()
         if not executed_trades.empty and "symbol" in executed_trades
@@ -128,6 +132,11 @@ def calculate_performance_metrics(
         "sell_trade_count": float(len(sell_trades)),
         "unique_symbols_traded": float(executed_trades["symbol"].nunique()) if not executed_trades.empty and "symbol" in executed_trades else 0.0,
         "top_symbol_trade_value_share": top_symbol_trade_value_share,
+        "total_commission": total_commission,
+        "total_stamp_tax": total_stamp_tax,
+        "total_slippage_cost": total_slippage_cost,
+        "total_transaction_cost": total_transaction_cost,
+        "transaction_cost_to_trade_value": float(total_transaction_cost / total_trade_value) if total_trade_value else 0.0,
         "final_value": float(values.iloc[-1]),
     }
 

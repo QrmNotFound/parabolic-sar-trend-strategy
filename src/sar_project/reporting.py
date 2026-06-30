@@ -56,7 +56,7 @@ def _plot_nav(portfolio: pd.DataFrame, path: Path) -> None:
         plt.plot(x, portfolio["benchmark_value"], label="CSI 300", linewidth=1.5)
     if "equal_weight_value" in portfolio:
         plt.plot(x, portfolio["equal_weight_value"], label="Dynamic top-50 equal weight", linewidth=1.5)
-    plt.title("Out-of-sample net value comparison")
+    plt.title("Historical validation net value comparison")
     plt.xlabel("Date")
     plt.ylabel("Portfolio value")
     plt.legend()
@@ -79,7 +79,7 @@ def _plot_drawdown(portfolio: pd.DataFrame, path: Path) -> None:
     x = pd.to_datetime(portfolio["trade_date"])
     plt.figure(figsize=(10, 4))
     plt.plot(x, max_drawdown_series(portfolio["portfolio_value"]), label="Strategy drawdown", color="#b91c1c")
-    plt.title("Out-of-sample drawdown")
+    plt.title("Historical validation drawdown")
     plt.xlabel("Date")
     plt.ylabel("Drawdown")
     plt.grid(alpha=0.25)
@@ -114,7 +114,7 @@ def _plot_monthly_returns(portfolio: pd.DataFrame, path: Path) -> None:
     plt.figure(figsize=(10, 4))
     colors = ["#166534" if value >= 0 else "#b91c1c" for value in monthly]
     plt.bar(monthly.index, monthly.values, width=20, color=colors)
-    plt.title("Out-of-sample monthly returns")
+    plt.title("Historical validation monthly returns")
     plt.xlabel("Month")
     plt.ylabel("Return")
     plt.grid(axis="y", alpha=0.25)
@@ -143,7 +143,13 @@ def _plot_trade_returns(trades: pd.DataFrame, path: Path) -> None:
 def _write_metrics_table(test_metrics: Mapping[str, float], train_metrics: Mapping[str, float], path: Path) -> None:
     rows = []
     for key in sorted(set(train_metrics) | set(test_metrics)):
-        rows.append({"metric": key, "sample_in": train_metrics.get(key), "sample_out": test_metrics.get(key)})
+        rows.append(
+            {
+                "metric": key,
+                "sample_in": train_metrics.get(key),
+                "historical_validation": test_metrics.get(key),
+            }
+        )
     pd.DataFrame(rows).to_csv(path, index=False)
 
 
@@ -180,11 +186,13 @@ def _build_markdown(
         )
     take_profit = float(best_params.get("take_profit", 0))
     take_profit_text = "不主动止盈" if take_profit >= 1 else f"{take_profit:.2%}"
+    stop_loss = float(best_params.get("stop_loss", 0))
+    stop_loss_text = "不主动止损" if stop_loss >= 1 else f"{stop_loss:.2%}"
     return f"""# SAR 抛物线趋势跟踪策略重做报告
 
 ## 项目摘要
 
-本项目重做原本科 SAR 策略报告，重点展示数据获取、回测偏差修正、交易约束建模、样本内参数选择、样本外验证和结果解释能力。{data_note}
+本项目重做原本科 SAR 策略报告，重点展示数据获取、回测偏差修正、交易约束建模、样本内参数选择、历史验证和结果解释能力。{data_note}
 
 ## 原报告主要问题
 
@@ -198,15 +206,17 @@ def _build_markdown(
 
 - 区间：2016-01-01 至 2025-12-31。
 - 股票池：每月沪深300历史权重前 50 只股票，并在每日使用最近可得成分。
-- 样本内：2016-2020；样本外：2021-2025。
-- 基准：沪深300价格指数、动态前50等权组合。
+- 样本内：2016-2020；历史验证：2021-2025。
+- 基准：沪深300价格指数、动态前50等权毛收益组合。
 {coverage_note}
 
 ## 策略规则
 
 买入候选要求 `close_adj > SAR`、`volume_ratio` 高于阈值且 RSI 低于上限；卖出条件包括价格跌破 SAR、RSI 超买、止损、止盈或离开候选池。所有信号在 t 日收盘后确认，交易在 t+1 日开盘执行。
 
-本版策略不允许通过长期空仓来制造超额收益。样本内参数选择先要求平均股票仓位、平均持仓数量和低仓位天数比例满足约束，再要求样本内收益、超额收益和最大回撤达到训练底线。过线后，优化器优先选择更分散的组合，并对样本内超额收益设置打分上限，避免单纯追逐训练集最高超额。
+交易成本包括双边佣金 0.03%，单笔最低佣金 5 元，卖出印花税 0.10%，以及单边滑点 0.05%。
+
+本版策略不允许通过长期空仓来制造超额收益。样本内参数选择先要求平均股票仓位、平均持仓数量和低仓位天数比例满足约束，再检查样本内收益、超额收益和最大回撤训练底线。排序时优先比较样本内累计超额收益、夏普、最大回撤和总收益，最后再比较平均持仓数量和换手率，避免用“持仓更多”替代样本内表现。
 
 ## 参数选择
 
@@ -220,12 +230,12 @@ def _build_markdown(
 | RSI ceiling | {best_params.get("rsi_ceiling", 0):.2f} |
 | Max positions | {best_params.get("max_positions", 0):.0f} |
 | Rebalance interval | {best_params.get("rebalance_interval", 0):.0f} |
-| Stop loss | {best_params.get("stop_loss", 0):.2%} |
+| Stop loss | {stop_loss_text} |
 | Take profit | {take_profit_text} |
 
-## 样本外核心结果
+## 历史验证核心结果
 
-| 指标 | 样本内 | 样本外 |
+| 指标 | 样本内 | 历史验证 |
 | --- | ---: | ---: |
 | 总收益率 | {train_metrics.get("total_return", 0):.2%} | {test_metrics.get("total_return", 0):.2%} |
 | 年化收益率 | {train_metrics.get("annual_return", 0):.2%} | {test_metrics.get("annual_return", 0):.2%} |
@@ -242,7 +252,7 @@ def _build_markdown(
 | 交易股票数 | {train_metrics.get("unique_symbols_traded", 0):.0f} | {test_metrics.get("unique_symbols_traded", 0):.0f} |
 | 单一股票成交额占比上限 | {train_metrics.get("top_symbol_trade_value_share", 0):.2%} | {test_metrics.get("top_symbol_trade_value_share", 0):.2%} |
 
-样本外累计收益对比：策略 {comparison.get("strategy_total_return", 0):.2%}，沪深300 {comparison.get("benchmark_total_return", 0):.2%}，动态前50等权组合 {comparison.get("equal_weight_total_return", 0):.2%}。本版策略在扣除交易成本后取得正的累计超额收益，但该结果仍属于课程级历史回测，不等同于可实盘收益承诺。
+历史验证累计收益对比：策略 {comparison.get("strategy_total_return", 0):.2%}，沪深300 {comparison.get("benchmark_total_return", 0):.2%}，动态前50等权毛收益组合 {comparison.get("equal_weight_total_return", 0):.2%}。本版策略在扣除交易成本后相对沪深300取得正累计超额，但绝对收益仍为负，不能被表述为稳定盈利策略。该结果属于课程级历史回测，不等同于可实盘收益承诺。
 
 ## 图表
 
@@ -262,26 +272,26 @@ def _build_markdown(
 
 | 文件 | 用途 |
 | --- | --- |
-| `trade_ledger_sample_out.csv` | 样本外全部成交与未成交阻断记录，附信号日 SAR、RSI、成交量比例和推断触发原因 |
-| `round_trip_trades_sample_out.csv` | 样本外买入与卖出配对后的完整交易回合 |
-| `portfolio_sample_out.csv` | 样本外每日组合净值、现金、持仓数量和基准净值 |
+| `trade_ledger_sample_out.csv` | 历史验证区间全部成交与未成交阻断记录，附信号日 SAR、RSI、成交量比例和推断触发原因 |
+| `round_trip_trades_sample_out.csv` | 历史验证区间买入与卖出配对后的完整交易回合 |
+| `portfolio_sample_out.csv` | 历史验证区间每日组合净值、现金、持仓数量和基准净值 |
 | `optimization_results_sample_in.csv` | 样本内全部参数组合真实回测结果 |
-| `market_data_used.csv.gz` | 样本外回测使用的行情、复权字段和信号字段 |
+| `market_data_used.csv.gz` | 历史验证区间回测使用的行情、复权字段和信号字段 |
 | `source_data_inventory.csv` | 本地缓存数据文件行数、日期范围和 SHA-256 |
 | `raw_snapshot_manifest.csv` | 原始 tinyshare/Tushare 快照清单，不包含 token |
 | `audit_manifest.csv` | 审计附件文件大小、生成时间和 SHA-256 |
 
-这些附件用于复核报告核心数字和样本外交易，不提交 `.env`、token 或原始大体量 API 响应。
+这些附件用于复核报告核心数字和历史验证交易，不提交 `.env`、token 或原始大体量 API 响应。
 
 ## 结论与边界
 
 本项目不能被表述为“成熟稳定盈利策略”或“可直接实盘部署系统”。更准确的表述是：使用 Python 完成了 A 股日频技术指标策略的数据获取、动态股票池构建、交易约束回测、样本内外验证和绩效分析。策略结果应作为课程级研究练习与实习能力展示，而非投资建议。
 
-还需要说明：本次重做过程根据原报告问题和中间回测诊断调整了规则，因此 2021-2025 对最终代码是样本外区间，但不应包装成完全盲测。若要进一步提高可信度，应使用更新数据或额外保留区间进行二次验证。
+还需要说明：本次重做过程根据原报告问题和中间回测诊断调整了规则，因此 2021-2025 更适合称为历史验证区间或开发后回测，不应包装成完全盲测。若要进一步提高可信度，应在固定代码和参数后，使用 2026-07-01 之后的新数据做真正盲测。
 
 ## 简历可表述
 
-可写：使用 Python 与 tinyshare/Tushare 构建 A 股 SAR 趋势跟踪回测框架，完成历史成分股股票池、复权行情处理、t+1 成交、交易成本、样本内参数选择、样本外绩效评估和报告生成。
+可写：使用 Python 与 tinyshare/Tushare 构建 A 股 SAR 趋势跟踪回测框架，完成历史成分股股票池、复权行情处理、t+1 成交、交易成本、样本内参数选择、历史验证绩效评估和报告生成。
 
 不建议写：独立开发稳定盈利量化策略、策略显著长期跑赢沪深300、完成可实盘交易系统。
 """
