@@ -53,6 +53,15 @@ class SarPipelineIntegrationTest(unittest.TestCase):
             self.assertIn("trade_ledger_sample_out.csv", manifest)
             self.assertIn("sha256", manifest)
 
+            main(["ablate", "--root", str(root), "--offline-ok"])
+            ablation = processed / "stage2_ablation_results.csv"
+            self.assertTrue(ablation.exists())
+            ablation_text = ablation.read_text(encoding="utf-8")
+            self.assertIn("E0_baseline", ablation_text)
+            self.assertIn("E7_all_modules", ablation_text)
+            self.assertIn("historical_validation", ablation_text)
+            self.assertTrue((docs / "stage2_ablation_results.csv").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

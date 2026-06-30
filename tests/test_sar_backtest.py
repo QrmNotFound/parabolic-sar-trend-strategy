@@ -29,6 +29,8 @@ def _price_frame(close_values, *, up_limits=None, down_limits=None):
             "rsi": [50, 50, 50, 50],
             "volume_ratio": [2.0, 2.0, 2.0, 2.0],
             "signal_strength": [1.0, 1.0, 1.0, 1.0],
+            "atr20": [1.0, 1.0, 1.0, 1.0],
+            "ma60": close_values,
             "up_limit_adj": up_limits,
             "down_limit_adj": down_limits,
         }
@@ -123,6 +125,113 @@ class SarBacktestTest(unittest.TestCase):
         self.assertEqual(len(buy_trades), 1)
         self.assertEqual(buy_trades.iloc[0]["signal_date"], "20210101")
         self.assertEqual(buy_trades.iloc[0]["trade_date"], "20210104")
+
+    def test_market_filter_blocks_new_buys(self):
+        prices = {"AAA": _price_frame([10.0, 11.0, 12.0, 13.0])}
+        benchmark = pd.DataFrame(
+            {
+                "trade_date": ["20210101", "20210104", "20210105", "20210106"],
+                "benchmark_value": [100.0, 99.0, 98.0, 97.0],
+            }
+        )
+        inputs = BacktestInputs(
+            trading_dates=["20210101", "20210104", "20210105", "20210106"],
+            prices=prices,
+            universe_by_date={date: ["AAA"] for date in ["20210101", "20210104", "20210105", "20210106"]},
+            benchmark=benchmark,
+        )
+
+        result = run_backtest(
+            inputs,
+            StrategyParams(
+                max_positions=1,
+                rebalance_interval=1,
+                initial_capital=100000,
+                use_market_filter=True,
+                market_ma_window=2,
+            ),
+            ExecutionParams(lot_size=100),
+        )
+
+        self.assertTrue(result.trades.empty)
+
+    def test_atr_trailing_stop_sells_after_close_signal(self):
+        frame = _price_frame_with_raw(
+            raw_values=[10.0, 10.0, 10.0, 10.0],
+            adjusted_values=[10.0, 10.0, 10.0, 10.0],
+        )
+        frame["atr20"] = [1.0, 1.0, 1.0, 1.0]
+        position = Position(
+            symbol="AAA",
+            shares=1000,
+            cost_basis=10.0,
+            entry_date="20201231",
+            last_price=12.0,
+            highest_price=12.0,
+        )
+        inputs = BacktestInputs(
+            trading_dates=["20210101", "20210104", "20210105", "20210106"],
+            prices={"AAA": frame},
+            universe_by_date={date: ["AAA"] for date in ["20210101", "20210104", "20210105", "20210106"]},
+            starting_positions={"AAA": position},
+            starting_cash=0.0,
+        )
+
+        result = run_backtest(
+            inputs,
+            StrategyParams(
+                max_positions=1,
+                rebalance_interval=10,
+                initial_capital=10000,
+                stop_loss=1.0,
+                take_profit=10.0,
+                use_atr_trailing_stop=True,
+                atr_stop_multiplier=1.0,
+            ),
+            ExecutionParams(
+                commission_rate=0.0,
+                stamp_tax_rate=0.0,
+                slippage_rate=0.0,
+                minimum_commission=0.0,
+                lot_size=100,
+            ),
+        )
+
+        sells = result.trades[result.trades["action"] == "sell"]
+        self.assertEqual(len(sells), 1)
+        self.assertEqual(sells.iloc[0]["signal_date"], "20210101")
+        self.assertEqual(sells.iloc[0]["trade_date"], "20210104")
+
+    def test_inverse_volatility_sizing_allocates_more_to_lower_volatility(self):
+        low_vol = _price_frame([10.0, 10.0, 10.0, 10.0])
+        high_vol = _price_frame([10.0, 10.0, 10.0, 10.0])
+        low_vol["atr20"] = [1.0, 1.0, 1.0, 1.0]
+        high_vol["atr20"] = [4.0, 4.0, 4.0, 4.0]
+        inputs = BacktestInputs(
+            trading_dates=["20210101", "20210104", "20210105", "20210106"],
+            prices={"AAA": low_vol, "BBB": high_vol},
+            universe_by_date={date: ["AAA", "BBB"] for date in ["20210101", "20210104", "20210105", "20210106"]},
+        )
+
+        result = run_backtest(
+            inputs,
+            StrategyParams(
+                max_positions=2,
+                rebalance_interval=1,
+                initial_capital=100000,
+                use_inverse_volatility_sizing=True,
+            ),
+            ExecutionParams(
+                commission_rate=0.0,
+                stamp_tax_rate=0.0,
+                slippage_rate=0.0,
+                minimum_commission=0.0,
+                lot_size=100,
+            ),
+        )
+
+        buys = result.trades[result.trades["action"] == "buy"].set_index("symbol")
+        self.assertGreater(int(buys.loc["AAA", "shares"]), int(buys.loc["BBB", "shares"]))
 
     def test_execution_and_valuation_use_raw_prices_when_available(self):
         frame = _price_frame_with_raw(

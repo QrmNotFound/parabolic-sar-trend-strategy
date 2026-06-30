@@ -18,9 +18,21 @@
 | Field | Meaning |
 | --- | --- |
 | `sar` | Parabolic SAR value calculated from adjusted high/low |
+| `ma60` | Rolling moving average of adjusted close, currently used for diagnostics |
+| `atr20` | Rolling average true range, using raw OHLC when available and adjusted OHLC as fallback |
 | `rsi` | 14-day RSI calculated from adjusted close |
 | `volume_ratio` | Current volume divided by rolling 20-day average volume |
 | `signal_strength` | Ranking score used to order buy candidates |
+
+## Stage-2 Ablation
+
+| Field | Meaning |
+| --- | --- |
+| `experiment` | Fixed ablation id from `E0_baseline` to `E7_all_modules` |
+| `period` | `sample_in` or `historical_validation` |
+| `use_market_filter` | Whether the CSI 300 moving-average market filter is enabled |
+| `use_atr_trailing_stop` | Whether the ATR trailing stop module is enabled |
+| `use_inverse_volatility_sizing` | Whether new buys use inverse-volatility cash allocation |
 
 ## Portfolio And Trades
 

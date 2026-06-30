@@ -32,6 +32,12 @@ class StrategyParams:
     take_profit: float = 0.20
     volume_threshold: float = 1.5
     rsi_ceiling: float = 70.0
+    use_market_filter: bool = False
+    market_ma_window: int = 60
+    use_atr_trailing_stop: bool = False
+    atr_stop_multiplier: float = 3.0
+    use_inverse_volatility_sizing: bool = False
+    volatility_floor: float = 0.01
 
 
 @dataclass
@@ -42,6 +48,7 @@ class Position:
     entry_date: str
     entry_value: float = 0.0
     last_price: float = 0.0
+    highest_price: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -112,8 +119,12 @@ def run_backtest(
 
     price_lookup = inputs.price_lookup if inputs.price_lookup is not None else _build_price_lookup(inputs.prices)
     positions = {symbol: Position(**vars(position)) for symbol, position in inputs.starting_positions.items()}
+    for position in positions.values():
+        if not position.highest_price:
+            position.highest_price = position.last_price or position.cost_basis
     cash = strategy_params.initial_capital if inputs.starting_cash is None else inputs.starting_cash
     pending: Optional[PendingOrders] = None
+    market_filter = _build_market_filter(inputs.benchmark, strategy_params.market_ma_window)
     portfolio_rows = []
     trade_rows = []
 
@@ -149,6 +160,9 @@ def run_backtest(
             price_lookup=price_lookup,
             universe=inputs.universe_by_date.get(trade_date, ()),
             strategy_params=strategy_params,
+            market_allows_buys=(
+                not strategy_params.use_market_filter or bool(market_filter.get(trade_date, False))
+            ),
         )
 
     portfolio = pd.DataFrame(portfolio_rows)
@@ -254,7 +268,7 @@ def _execute_pending_orders(
         if _at_up_limit(row, raw_open):
             trade_rows.append(_blocked_trade(pending.signal_date, trade_date, symbol, "blocked_buy", "up_limit"))
             continue
-        allocation = cash / max(len(buy_symbols) - buy_index, 1)
+        allocation = _buy_allocation(cash, buy_symbols[buy_index:], symbol, pending.signal_date, price_lookup, strategy_params)
         shares = calculate_buy_capacity(allocation, raw_open, execution_params)
         if shares <= 0:
             continue
@@ -280,6 +294,7 @@ def _execute_pending_orders(
             entry_date=trade_date,
             entry_value=total_cash_needed,
             last_price=execution_price,
+            highest_price=execution_price,
         )
         trade_rows.append(
             {
@@ -314,6 +329,7 @@ def _make_pending_orders(
     price_lookup: Mapping[str, Mapping[str, pd.Series]],
     universe: Iterable[str],
     strategy_params: StrategyParams,
+    market_allows_buys: bool = True,
 ) -> PendingOrders:
     universe_set = set(universe)
     sells = []
@@ -329,18 +345,27 @@ def _make_pending_orders(
         risk_close = _valuation_close_price(row)
         if risk_close is None:
             risk_close = position.last_price or position.cost_basis
+        if risk_close is not None:
+            position.highest_price = max(position.highest_price or position.cost_basis, risk_close)
+        atr_stop_signal = False
+        if strategy_params.use_atr_trailing_stop:
+            atr = _to_float(row.get("atr20"))
+            if atr is not None and atr > 0 and risk_close is not None:
+                stop_price = (position.highest_price or position.cost_basis) - strategy_params.atr_stop_multiplier * atr
+                atr_stop_signal = risk_close < stop_price
         sell_signal = (
             signal_close < float(row.get("sar", signal_close))
             or float(row.get("rsi", 50.0)) > strategy_params.rsi_ceiling
             or risk_close < position.cost_basis * (1 - strategy_params.stop_loss)
             or risk_close > position.cost_basis * (1 + strategy_params.take_profit)
+            or atr_stop_signal
             or symbol not in universe_set
         )
         if sell_signal:
             sells.append(symbol)
 
     buys = []
-    if rebalance_now:
+    if rebalance_now and market_allows_buys:
         for symbol in universe:
             if symbol in positions:
                 continue
@@ -370,6 +395,7 @@ def _portfolio_value(
         close_price = _valuation_close_price(row)
         if close_price is not None:
             position.last_price = close_price
+            position.highest_price = max(position.highest_price or close_price, close_price)
             value += position.shares * close_price
         elif position.last_price:
             value += position.shares * position.last_price
@@ -393,6 +419,54 @@ def _attach_benchmarks(
         result = result.merge(equal_weight_benchmark[["trade_date", "equal_weight_value"]], on="trade_date", how="left")
         result["equal_weight_value"] = result["equal_weight_value"].ffill().bfill()
     return result
+
+
+def _build_market_filter(benchmark: Optional[pd.DataFrame], window: int) -> Dict[str, bool]:
+    if benchmark is None or benchmark.empty or "trade_date" not in benchmark:
+        return {}
+    value_column = "benchmark_value" if "benchmark_value" in benchmark else "close"
+    if value_column not in benchmark:
+        return {}
+    frame = benchmark[["trade_date", value_column]].copy()
+    frame[value_column] = pd.to_numeric(frame[value_column], errors="coerce").ffill()
+    moving_average = frame[value_column].rolling(window=window, min_periods=window).mean()
+    allows = frame[value_column] > moving_average
+    return {str(date): bool(allow) for date, allow in zip(frame["trade_date"], allows)}
+
+
+def _buy_allocation(
+    cash: float,
+    remaining_symbols: Sequence[str],
+    symbol: str,
+    signal_date: str,
+    price_lookup: Mapping[str, Mapping[str, pd.Series]],
+    strategy_params: StrategyParams,
+) -> float:
+    if not strategy_params.use_inverse_volatility_sizing:
+        return cash / max(len(remaining_symbols), 1)
+    weights = {
+        candidate: _inverse_volatility_weight(candidate, signal_date, price_lookup, strategy_params)
+        for candidate in remaining_symbols
+    }
+    total_weight = sum(weights.values())
+    if total_weight <= 0:
+        return cash / max(len(remaining_symbols), 1)
+    return cash * weights.get(symbol, 0.0) / total_weight
+
+
+def _inverse_volatility_weight(
+    symbol: str,
+    signal_date: str,
+    price_lookup: Mapping[str, Mapping[str, pd.Series]],
+    strategy_params: StrategyParams,
+) -> float:
+    row = price_lookup.get(symbol, {}).get(signal_date)
+    price = _valuation_close_price(row)
+    atr = _to_float(row.get("atr20")) if row is not None else None
+    if price is None or price <= 0 or atr is None or atr <= 0:
+        return 1.0
+    volatility = max(atr / price, strategy_params.volatility_floor)
+    return 1.0 / volatility
 
 
 def _at_up_limit(row: pd.Series, raw_open: float) -> bool:

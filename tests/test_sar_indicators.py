@@ -45,10 +45,33 @@ class SarIndicatorTest(unittest.TestCase):
         enriched = add_indicators(frame, IndicatorParams(rsi_window=2, volume_window=2))
 
         self.assertIn("sar", enriched.columns)
+        self.assertIn("ma60", enriched.columns)
+        self.assertIn("atr20", enriched.columns)
         self.assertIn("rsi", enriched.columns)
         self.assertIn("volume_ratio", enriched.columns)
         finite_or_missing = np.isfinite(enriched["volume_ratio"].dropna())
         self.assertTrue(finite_or_missing.all())
+
+    def test_add_indicators_uses_raw_prices_for_atr_when_available(self):
+        frame = pd.DataFrame(
+            {
+                "trade_date": ["20210101", "20210104", "20210105"],
+                "open": [100.0, 102.0, 101.0],
+                "high": [103.0, 106.0, 104.0],
+                "low": [99.0, 100.0, 98.0],
+                "close": [102.0, 101.0, 103.0],
+                "open_adj": [10.0, 10.2, 10.1],
+                "high_adj": [10.3, 10.6, 10.4],
+                "low_adj": [9.9, 10.0, 9.8],
+                "close_adj": [10.2, 10.1, 10.3],
+                "vol": [1000, 1200, 1300],
+            }
+        )
+
+        enriched = add_indicators(frame, IndicatorParams(atr_window=2, ma_window=2))
+
+        self.assertAlmostEqual(enriched["atr20"].iloc[0], 4.0)
+        self.assertAlmostEqual(enriched["ma60"].iloc[1], 10.15)
 
 
 if __name__ == "__main__":

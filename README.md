@@ -38,6 +38,12 @@ PYTHONPATH=src python3 -m sar_project.pipeline report
 PYTHONPATH=src python3 -m sar_project.pipeline all
 ```
 
+阶段2固定消融实验：
+
+```bash
+PYTHONPATH=src python3 -m sar_project.pipeline ablate
+```
+
 真实数据需要在本地 `.env` 或环境变量中设置：
 
 ```bash
@@ -63,6 +69,8 @@ TINYSHARE_TOKEN=...
 ## Current Result
 
 当前 Baseline V2 基于最新本地缓存数据生成。历史验证区间为 2021-2025 年，策略计入交易成本和 5 元最低佣金后累计收益率为 -9.92%，同期沪深300为 -12.11%，动态前50等权毛收益组合为 -8.19%；策略相对沪深300取得约 2.19% 的累计超额收益，但绝对收益仍为负，并跑输动态前50等权毛收益组合。历史验证平均股票仓位约 41.44%，后续改进不能继续依靠降低仓位来美化结果。
+
+阶段2仅做固定模块消融，不做新的自由调参。当前 E0-E7 结果保存在 `docs/sar_project/stage2_ablation_results.csv`；其中 E3 逆波动配权在历史验证中将累计收益改善到 -1.49%，平均股票仓位约 43.14%，但仍不能表述为稳定盈利策略。
 
 完整中文全过程报告：
 

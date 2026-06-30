@@ -21,6 +21,7 @@ from sar_project.dataset import (
     download_dataset,
     load_dataset,
 )
+from sar_project.experiments import run_stage2_ablation
 from sar_project.optimizer import ParameterGrid, SarParams, choose_best_parameters
 from sar_project.reporting import generate_report
 
@@ -35,7 +36,7 @@ END_DATE = "20251231"
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="SAR project pipeline")
-    parser.add_argument("command", choices=["download", "run", "report", "all"])
+    parser.add_argument("command", choices=["download", "run", "report", "ablate", "all"])
     parser.add_argument("--root", default=".", help="Project root")
     parser.add_argument("--offline-ok", action="store_true", help="Use deterministic fixture data if live data/token is unavailable")
     args = parser.parse_args(argv)
@@ -47,6 +48,8 @@ def main(argv: list[str] | None = None) -> None:
         _download_or_fixture(paths, args.offline_ok)
     if args.command in {"run", "all"}:
         run_research(paths)
+    if args.command == "ablate":
+        run_stage2_ablation(paths, TRAIN_START, TRAIN_END, TEST_START, TEST_END)
     if args.command in {"report", "all"}:
         offline = (paths.interim_root / "symbols.json").read_text(encoding="utf-8").find('"AAA"') >= 0
         coverage = build_data_coverage(paths)
@@ -56,7 +59,7 @@ def main(argv: list[str] | None = None) -> None:
 
 
 def run_research(paths: ProjectPaths) -> None:
-    """Run sample-in optimization, sample-out test, and full-period reference backtest."""
+    """Run sample-in optimization, historical validation, and full-period reference backtest."""
 
     dataset = load_dataset(paths)
     grid = ParameterGrid(

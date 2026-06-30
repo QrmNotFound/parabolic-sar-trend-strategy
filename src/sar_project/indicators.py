@@ -16,6 +16,8 @@ class IndicatorParams:
     sar_maximum: float = 0.2
     rsi_window: int = 14
     volume_window: int = 20
+    ma_window: int = 60
+    atr_window: int = 20
 
 
 def calculate_sar(frame: pd.DataFrame, acceleration: float = 0.02, maximum: float = 0.2) -> pd.DataFrame:
@@ -91,9 +93,32 @@ def add_indicators(frame: pd.DataFrame, params: IndicatorParams) -> pd.DataFrame
         raise ValueError(f"missing indicator columns: {sorted(missing)}")
 
     enriched = calculate_sar(frame, params.sar_acceleration, params.sar_maximum)
+    enriched["ma60"] = enriched["close_adj"].astype(float).rolling(window=params.ma_window, min_periods=1).mean()
+    enriched["atr20"] = _calculate_atr(enriched, params.atr_window)
     enriched["rsi"] = calculate_rsi(enriched["close_adj"], params.rsi_window)
     volume_ma = enriched["vol"].astype(float).rolling(window=params.volume_window, min_periods=1).mean()
     enriched["volume_ratio"] = enriched["vol"].astype(float) / volume_ma.replace(0, np.nan)
     enriched["volume_ratio"] = enriched["volume_ratio"].replace([np.inf, -np.inf], np.nan)
     enriched["signal_strength"] = 0.0
     return enriched
+
+
+def _calculate_atr(frame: pd.DataFrame, window: int = 20) -> pd.Series:
+    high = _price_series(frame, "high", "high_adj")
+    low = _price_series(frame, "low", "low_adj")
+    close = _price_series(frame, "close", "close_adj")
+    previous_close = close.shift(1)
+    true_range = pd.concat(
+        [
+            high - low,
+            (high - previous_close).abs(),
+            (low - previous_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    return true_range.rolling(window=window, min_periods=1).mean()
+
+
+def _price_series(frame: pd.DataFrame, raw_column: str, adjusted_column: str) -> pd.Series:
+    column = raw_column if raw_column in frame else adjusted_column
+    return frame[column].astype(float)
