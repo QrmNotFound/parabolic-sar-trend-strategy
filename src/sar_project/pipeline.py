@@ -10,6 +10,7 @@ from typing import Dict
 
 import pandas as pd
 
+from sar_project.audit import generate_audit_artifacts
 from sar_project.backtest import ExecutionParams, StrategyParams, run_backtest, with_price_lookup
 from sar_project.data_client import TinyshareClient, load_token
 from sar_project.dataset import (
@@ -50,6 +51,7 @@ def main(argv: list[str] | None = None) -> None:
         offline = (paths.interim_root / "symbols.json").read_text(encoding="utf-8").find('"AAA"') >= 0
         coverage = build_data_coverage(paths)
         pd.DataFrame([coverage]).to_csv(paths.docs_root / "data_coverage.csv", index=False)
+        generate_audit_artifacts(paths, TEST_START, TEST_END)
         generate_report(paths.processed_root, paths.docs_root, offline=offline, coverage=coverage)
 
 

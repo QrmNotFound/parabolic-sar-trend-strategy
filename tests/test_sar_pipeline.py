@@ -20,10 +20,31 @@ class SarPipelineIntegrationTest(unittest.TestCase):
             self.assertTrue((processed / "trades_test.csv").exists())
             self.assertTrue((docs / "sar_project_report.md").exists())
             self.assertTrue((docs / "sar_project_report.pdf").exists())
+            audit = docs / "audit"
+            self.assertTrue((audit / "portfolio_sample_out.csv").exists())
+            self.assertTrue((audit / "trade_ledger_sample_out.csv").exists())
+            self.assertTrue((audit / "round_trip_trades_sample_out.csv").exists())
+            self.assertTrue((audit / "optimization_results_sample_in.csv").exists())
+            self.assertTrue((audit / "best_params.json").exists())
+            self.assertTrue((audit / "market_data_used.csv.gz").exists())
+            self.assertTrue((audit / "source_data_inventory.csv").exists())
+            self.assertTrue((audit / "raw_snapshot_manifest.csv").exists())
+            self.assertTrue((audit / "audit_manifest.csv").exists())
 
             metrics = json.loads((processed / "metrics_test.json").read_text(encoding="utf-8"))
             self.assertIn("trade_win_rate", metrics)
             self.assertIn("positive_day_ratio", metrics)
+
+            ledger = (audit / "trade_ledger_sample_out.csv").read_text(encoding="utf-8")
+            self.assertIn("signal_close_adj", ledger)
+            self.assertIn("signal_sar", ledger)
+            self.assertIn("realized_pnl", ledger)
+            round_trips = (audit / "round_trip_trades_sample_out.csv").read_text(encoding="utf-8")
+            self.assertIn("entry_trade_date", round_trips)
+            self.assertIn("exit_trade_date", round_trips)
+            manifest = (audit / "audit_manifest.csv").read_text(encoding="utf-8")
+            self.assertIn("trade_ledger_sample_out.csv", manifest)
+            self.assertIn("sha256", manifest)
 
 
 if __name__ == "__main__":

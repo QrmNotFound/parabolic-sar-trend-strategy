@@ -75,6 +75,23 @@
 
 ![Trade returns](figures/trade_returns.png)
 
+## 审计附件
+
+报告目录下的 `audit/` 提供可复核附件：
+
+| 文件 | 用途 |
+| --- | --- |
+| `trade_ledger_sample_out.csv` | 样本外全部成交与未成交阻断记录，附信号日 SAR、RSI、成交量比例和推断触发原因 |
+| `round_trip_trades_sample_out.csv` | 样本外买入与卖出配对后的完整交易回合 |
+| `portfolio_sample_out.csv` | 样本外每日组合净值、现金、持仓数量和基准净值 |
+| `optimization_results_sample_in.csv` | 样本内全部参数组合真实回测结果 |
+| `market_data_used.csv.gz` | 样本外回测使用的行情、复权字段和信号字段 |
+| `source_data_inventory.csv` | 本地缓存数据文件行数、日期范围和 SHA-256 |
+| `raw_snapshot_manifest.csv` | 原始 tinyshare/Tushare 快照清单，不包含 token |
+| `audit_manifest.csv` | 审计附件文件大小、生成时间和 SHA-256 |
+
+这些附件用于复核报告核心数字和样本外交易，不提交 `.env`、token 或原始大体量 API 响应。
+
 ## 结论与边界
 
 本项目不能被表述为“成熟稳定盈利策略”或“可直接实盘部署系统”。更准确的表述是：使用 Python 完成了 A 股日频技术指标策略的数据获取、动态股票池构建、交易约束回测、样本内外验证和绩效分析。策略结果应作为课程级研究练习与实习能力展示，而非投资建议。

@@ -20,7 +20,7 @@
 | --- | --- |
 | 用户任务 | 形成一篇完整正式的中文项目全过程报告，包含代码、伪代码、策略解释和完整研究过程 |
 | 生成工具 | Codex，基于 GPT-5 |
-| 生成时间 | 2026-06-29 20:34:01 CST |
+| 生成时间 | 2026-06-30 09:44:23 CST |
 | 输入依据 | 当前仓库代码、`data/processed/sar_project/*.json`、`docs/sar_project/summary_metrics.csv`、`docs/sar_project/data_coverage.csv`、`docs/sar_project/figures/*.png` |
 | 审计状态 | 已根据当前结果文件和代码实现交叉核对；不新增外部文献事实；不构成投资建议 |
 
@@ -359,9 +359,9 @@ sell_price = next_open_adj * (1 - slippage_rate)
 | 规则 | 参数 |
 | --- | ---: |
 | 初始资金 | 1,000,000 元 |
-| 最大持仓数 | 30 只 |
+| 最大持仓数 | 50 只 |
 | 调仓间隔 | 20 个交易日 |
-| 单只买入资金 | 当前可用现金 / 待买入股票数 |
+| 单只买入资金 | 当前可用现金 / 剩余待买入股票数 |
 | 买入排序 | `signal_strength` 从高到低 |
 
 ### 7.4 为什么不能使用同日收盘成交
@@ -731,8 +731,28 @@ PYTHONPATH=src python3 -m unittest discover -s tests
 | `docs/sar_project/summary_metrics.csv` | 样本内和样本外指标表 |
 | `docs/sar_project/data_coverage.csv` | 数据覆盖情况 |
 | `docs/sar_project/figures/*.png` | 净值、回撤、热力图、月度收益、交易收益分布 |
+| `docs/sar_project/audit/*.csv` | 样本外交易流水、买卖配对、净值、参数搜索和审计清单 |
+| `docs/sar_project/audit/market_data_used.csv.gz` | 样本外回测实际使用的行情、复权字段和信号字段 |
 | `data/processed/sar_project/*.json` | 参数和指标结果，因数据产物较大不提交 |
 | `data/processed/sar_project/*.csv` | 回测净值、交易记录和优化结果，因数据产物较大不提交 |
+
+### 13.4 审计附件说明
+
+为提高“可复核”程度，项目在生成报告时同步输出 `docs/sar_project/audit/`。该目录中的核心文件包括：
+
+| 文件 | 内容 |
+| --- | --- |
+| `trade_ledger_sample_out.csv` | 样本外全部成交和未成交阻断记录，并附信号日 `close_adj`、`SAR`、`RSI`、成交量比例、信号强度、股票池状态和推断触发原因 |
+| `round_trip_trades_sample_out.csv` | 将买入与卖出配对后的完整交易回合，可逐笔核对盈亏、收益率和持仓天数 |
+| `portfolio_sample_out.csv` | 样本外每日组合净值、现金、持仓数量、沪深300和动态前50等权基准 |
+| `optimization_results_sample_in.csv` | 样本内全部参数组合的真实回测结果和筛选字段 |
+| `best_params.json` | 最终选中参数 |
+| `market_data_used.csv.gz` | 样本外回测实际使用的行情、涨跌停、复权字段、SAR、RSI、成交量比例和信号强度 |
+| `source_data_inventory.csv` | 本地缓存数据文件的行数、日期范围、字段和 SHA-256 |
+| `raw_snapshot_manifest.csv` | 原始 API 快照的端点、参数、时间、行数和 SHA-256，不包含 token |
+| `audit_manifest.csv` | 审计附件自身的文件大小、生成时间和 SHA-256 |
+
+这些附件不提交 `.env`、授权 token 或完整原始 API 响应，但已经足以让读者从样本外交易、每日净值、参数搜索和市场数据字段层面复核报告核心结果。
 
 ## 14. 面试与简历表述边界
 

@@ -53,6 +53,7 @@ TINYSHARE_TOKEN=...
 | `src/sar_project/` | SAR 策略、数据、回测、优化和报告生成代码 |
 | `tests/test_sar_*.py` | SAR 项目单元测试和流水线测试 |
 | `docs/sar_project/` | 回测报告、图表和摘要指标 |
+| `docs/sar_project/audit/` | 样本外交易流水、配对交易、净值、参数搜索和 SHA-256 审计附件 |
 | `data/raw/`, `data/interim/`, `data/processed/` | 数据目录占位；真实缓存数据默认不提交 |
 | `scripts/run_checks.sh` | 本地验证入口 |
 
@@ -68,5 +69,13 @@ TINYSHARE_TOKEN=...
 
 - `docs/sar_project/sar_project_report.md`
 - `docs/sar_project/sar_project_report.pdf`
+
+审计附件：
+
+- `docs/sar_project/audit/trade_ledger_sample_out.csv`
+- `docs/sar_project/audit/round_trip_trades_sample_out.csv`
+- `docs/sar_project/audit/portfolio_sample_out.csv`
+- `docs/sar_project/audit/optimization_results_sample_in.csv`
+- `docs/sar_project/audit/audit_manifest.csv`
 
 本项目仅用于课程/实习展示和研究复现，不构成投资建议。
